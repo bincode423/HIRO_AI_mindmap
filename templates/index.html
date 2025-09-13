@@ -1,0 +1,652 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>HIRO AI</title>
+<link rel="icon" type="image/png" href="static/logo.png" />
+<link rel="stylesheet" href="static/style.css" />
+</head>
+<body>
+<header>
+  <div id="toolbar-left">
+    <img src="static/logo.png" alt="HIRO AI Logo" class="logo" />
+    <h3>HIRO AI </h3>
+    <input id="newKeywordInput" class="text-input" placeholder="새 키워드 입력" />
+    <button class="btn" id="createKeywordBtn">키워드 추가</button>
+    <button class="btn" id="connectModeBtn">키워드 연결</button>
+    <button class="btn" id="disconnectModeBtn">연결 삭제</button>
+    <button class="btn" id="resetBtn">화면 초기화</button>
+  </div>
+  <div id="toolbar-right">
+    <button class="btn" id="exportJson">JSON 내보내기</button>
+    <button class="btn" id="importJson">JSON 가져오기</button>
+    <button class="btn" id="exportPNG">PNG로 내보내기</button>
+    <!-- 테마 선택 -->
+    <select id="themeSelect" class="theme-select">
+      <option value="light">화이트 테마</option>
+      <option value="dark">다크 테마</option>
+      <option value="purple">퍼플 테마</option>
+    </select>
+  </div>
+</header>
+
+<div id="board" tabindex="0">
+  <svg class="connections"></svg>
+  <!-- 로딩 오버레이 -->
+  <div id="loadingOverlay" class="loading-overlay hidden">
+    <div class="loading-content">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">AI 키워드 생성 중...</div>
+    </div>
+  </div>
+</div>
+
+<div class="side">
+  <h3>선택된 노드</h3>
+  <div id="inspector">
+    <div><label>텍스트: <input id="nodeText" class="text-input"/></label></div>
+    <div><label>색상: <input id="nodeColor" class="color-input" type="color" /></label></div>
+    <div><label>크기: <input id="nodeSize" type="range" min="10" max="60" /></label></div>
+    <div style="margin-top:.5rem;">
+      <button class="btn" id="deleteNodeBtn">삭제</button>
+      <button class="btn" id="bringFrontBtn">앞으로</button>
+    </div>
+  </div>
+  <h3>AI 키워드 생성</h3>
+  <div id="inspector">
+    <div><label>생성 개수: <span id="keyword_size_display">5</span>개</label></div>
+    <input id="keyword_size" type="range" min="1" max="10" value="5" />
+    <label style="display:flex;align-items:center;gap:.5rem;margin-top:.5rem;">
+      <input id="deep_mode" type="checkbox" />
+      <span>심층 생성</span>
+    </label>
+    <button class="btn" id="generateSubBtn">생성</button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+<script>
+/* === 데이터 구조 ===
+nodes: { id, x, y, text, color, size, z }
+links: { from, to }
+*/
+let nodes = [];
+let links = [];
+let nodeCounter = 0;
+let selectedNodeId = null;
+let connectMode = false;
+
+// === 패닝(무한 보드) 상태 ===
+let pan = { x: 0, y: 0 };
+let isPanning = false;
+let panStart = { x: 0, y: 0 };
+
+const board = document.getElementById('board');
+const svg = document.querySelector('svg.connections');
+
+/* 노드 추가 */
+function addNode(text = 'New', x = 200, y = 150, color='#ffea7f', size=16){
+  const id = 'n' + (++nodeCounter);
+  const n = { id, x, y, text, color, size, z: nodeCounter + 1000 }; // Ensure nodes are above connection lines (z-index 500)
+  nodes.push(n);
+  renderNode(n);
+  drawLinks();
+  saveLocal();
+  return n;
+}
+
+/* 노드 렌더링 */
+function renderNode(n){
+  const div = document.createElement('div');
+  div.className = 'node';
+  div.id = n.id;
+  div.style.left = n.x + 'px';
+  div.style.top = n.y + 'px';
+  div.style.background = n.color;
+  div.style.fontSize = n.size + 'px';
+  div.dataset.z = n.z;
+  div.style.zIndex = n.z;
+  div.innerHTML = `<div class="label">${escapeHtml(n.text)}</div>`;
+  board.appendChild(div);
+
+  // 패닝 오프셋 적용
+  div.style.transform = `translate(${pan.x}px, ${pan.y}px) translate(-50%, -50%)`;
+
+  div.addEventListener('mousedown', nodeMouseDown);
+  div.addEventListener('click', (e)=> {
+    e.stopPropagation();
+    selectNode(n.id);
+    if(connectMode){
+      handleConnectClick(n.id);
+    }
+    if(disconnectMode){
+      handleDisconnectClick(n.id);
+    }
+  });
+  div.addEventListener('dblclick', (e)=> {
+    e.stopPropagation();
+    const newText = prompt('노드 텍스트 편집', n.text);
+    if(newText !== null){ n.text = newText; updateNode(n.id); }
+  });
+}
+
+/* 노드 업데이트 */
+function updateNode(id){
+  const n = nodes.find(x=>x.id === id);
+  if(!n) return;
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.style.left = n.x + 'px';
+  el.style.top = n.y + 'px';
+  el.style.background = n.color;
+  el.style.fontSize = n.size + 'px';
+  el.style.zIndex = n.z;
+  el.querySelector('.label').textContent = n.text;
+  // 패닝 오프셋 유지
+  el.style.transform = `translate(${pan.x}px, ${pan.y}px) translate(-50%, -50%)`;
+  drawLinks();
+  saveLocal();
+}
+
+/* HTML 이스케이프 */
+function escapeHtml(s){ 
+  return (s+'').replace(/[&<>"']/g, function(m){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];
+  }); 
+}
+
+/* 드래그 */
+let dragNode = null;
+let offset = {x:0,y:0};
+
+function nodeMouseDown(e){
+  if(e.button !== 0) return;
+  const el = e.currentTarget;
+  dragNode = nodes.find(n=>n.id === el.id);
+  // 패닝 오프셋 고려
+  offset.x = e.clientX - (dragNode.x + pan.x);
+  offset.y = e.clientY - (dragNode.y + pan.y);
+  document.addEventListener('mousemove', nodeMouseMove);
+  document.addEventListener('mouseup', nodeMouseUp);
+  el.style.cursor = 'grabbing';
+}
+
+function nodeMouseMove(e){
+  if(!dragNode) return;
+  // 패닝 오프셋 반영
+  dragNode.x = e.clientX - offset.x - pan.x;
+  dragNode.y = e.clientY - offset.y - pan.y;
+  updateNode(dragNode.id);
+}
+
+function nodeMouseUp(e){
+  if(dragNode){
+    const el = document.getElementById(dragNode.id);
+    if(el) el.style.cursor = 'grab';
+    dragNode = null;
+    saveLocal();
+  }
+  document.removeEventListener('mousemove', nodeMouseMove);
+  document.removeEventListener('mouseup', nodeMouseUp);
+}
+
+/* 선택 & 검사창 */
+function selectNode(id){
+  selectedNodeId = id;
+  const n = nodes.find(x=>x.id===id);
+  if(!n) return;
+  document.getElementById('nodeText').value = n.text;
+  document.getElementById('nodeColor').value = n.color;
+  document.getElementById('nodeSize').value = n.size;
+  
+  // 사이드 패널 표시
+  const sidePanel = document.querySelector('.side');
+  sidePanel.classList.add('visible');
+}
+
+/* 노드 선택 해제 */
+function deselectNode(){
+  selectedNodeId = null;
+  
+  // 사이드 패널 숨기기
+  const sidePanel = document.querySelector('.side');
+  sidePanel.classList.remove('visible');
+}
+
+document.getElementById('nodeText').addEventListener('input', (e)=>{
+  if(!selectedNodeId) return;
+  const n = nodes.find(x=>x.id===selectedNodeId);
+  n.text = e.target.value;
+  updateNode(n.id);
+});
+document.getElementById('nodeColor').addEventListener('input', (e)=>{
+  if(!selectedNodeId) return;
+  const n = nodes.find(x=>x.id===selectedNodeId);
+  n.color = e.target.value;
+  updateNode(n.id);
+});
+document.getElementById('nodeSize').addEventListener('input', (e)=>{
+  if(!selectedNodeId) return;
+  const n = nodes.find(x=>x.id===selectedNodeId);
+  n.size = parseInt(e.target.value,10);
+  updateNode(n.id);
+});
+
+/* 삭제 */
+document.getElementById('deleteNodeBtn').addEventListener('click', ()=>{
+  if(!selectedNodeId) return;
+  nodes = nodes.filter(n=>n.id !== selectedNodeId);
+  links = links.filter(l=> l.from !== selectedNodeId && l.to !== selectedNodeId);
+  const el = document.getElementById(selectedNodeId);
+  if(el) el.remove();
+  deselectNode();
+  drawLinks();
+  saveLocal();
+});
+
+/* 앞으로 보내기 */
+document.getElementById('bringFrontBtn').addEventListener('click', ()=>{
+  if(!selectedNodeId) return;
+  const n = nodes.find(x=>x.id===selectedNodeId);
+  n.z = ++nodeCounter + 1000; // Ensure nodes are above connection lines (z-index 500)
+  updateNode(n.id);
+});
+
+/* 연결(링크) */
+function connectNodes(a,b){
+  if(!a || !b || a===b) return;
+  if(links.some(l=> l.from===a && l.to===b)) return;
+  links.push({from:a,to:b});
+  drawLinks();
+  saveLocal();
+}
+
+function drawLinks(){
+  svg.innerHTML = '';
+  links.forEach(l=>{
+    const na = nodes.find(n=>n.id===l.from);
+    const nb = nodes.find(n=>n.id===l.to);
+    if(!na || !nb) return;
+    const line = document.createElementNS("http://www.w3.org/2000/svg",'line');
+    line.setAttribute('x1', na.x);
+    line.setAttribute('y1', na.y);
+    line.setAttribute('x2', nb.x);
+    line.setAttribute('y2', nb.y);
+    line.setAttribute('stroke', 'var(--link-color)');
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('stroke-opacity', '0.7');
+    svg.appendChild(line);
+  });
+}
+
+// === 보드 패닝 적용 ===
+function applyPan(){
+  // SVG 이동
+  svg.style.transform = `translate(${pan.x}px, ${pan.y}px)`;
+  // 모든 노드 이동
+  document.querySelectorAll('.node').forEach(el => {
+    el.style.transform = `translate(${pan.x}px, ${pan.y}px) translate(-50%, -50%)`;
+  });
+}
+
+/* 연결 모드 */
+let connectSource = null;
+document.getElementById('connectModeBtn').addEventListener('click', ()=>{
+  connectMode = !connectMode;
+  disconnectMode = false; // 연결 모드 시 연결 삭제 모드 해제
+  document.getElementById('connectModeBtn').textContent = connectMode ? '키워드 연결 선택' : '키워드 연결';
+  document.getElementById('disconnectModeBtn').textContent = '연결 삭제';
+  connectSource = null;
+  disconnectSource = null;
+});
+function handleConnectClick(clickedId){
+  if(!connectSource){
+    connectSource = clickedId;
+    return;
+  }
+  connectNodes(connectSource, clickedId);
+  connectSource = null;
+  connectMode = false;
+  document.getElementById('connectModeBtn').textContent = '키워드 연결';
+}
+
+/* 연결 삭제 모드 */
+let disconnectMode = false;
+let disconnectSource = null;
+document.getElementById('disconnectModeBtn').addEventListener('click', ()=>{
+  disconnectMode = !disconnectMode;
+  connectMode = false; // 연결 삭제 모드 시 연결 모드 해제
+  document.getElementById('disconnectModeBtn').textContent = disconnectMode ? '연결 삭제 선택' : '연결 삭제';
+  document.getElementById('connectModeBtn').textContent = '키워드 연결';
+  disconnectSource = null;
+  connectSource = null;
+});
+function handleDisconnectClick(clickedId){
+  if(!disconnectSource){
+    disconnectSource = clickedId;
+    return;
+  }
+  disconnectNodes(disconnectSource, clickedId);
+  disconnectSource = null;
+  disconnectMode = false;
+  document.getElementById('disconnectModeBtn').textContent = '연결 삭제';
+}
+
+/* 연결 삭제 함수 */
+function disconnectNodes(a, b){
+  if(!a || !b || a === b) return;
+  // 양방향으로 연결을 찾아 삭제
+  links = links.filter(l => !(
+    (l.from === a && l.to === b) || 
+    (l.from === b && l.to === a)
+  ));
+  drawLinks();
+  saveLocal();
+}
+
+/* 툴바 - 노드 추가 */
+document.getElementById('createKeywordBtn').addEventListener('click', ()=>{
+  const input = document.getElementById('newKeywordInput');
+  const v = input.value.trim();
+  if(!v) return alert('키워드를 입력하세요');
+  addNode(v, 250 + Math.random()*200, 200 + Math.random()*200, '#fff6c1', 16);
+  input.value = ''; // 텍스트 박스 비우기
+});
+
+/* 화면 초기화 */
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  if(confirm('모든 작업을 초기화하시겠습니까?')){
+    // 모든 노드 DOM 요소 제거
+    document.querySelectorAll('.node').forEach(n=>n.remove());
+    // 데이터 초기화
+    nodes = [];
+    links = [];
+    nodeCounter = 0;
+    connectSource = null;
+    connectMode = false;
+    disconnectSource = null;
+    disconnectMode = false;
+    // UI 초기화
+    document.getElementById('connectModeBtn').textContent = '키워드 연결';
+    document.getElementById('disconnectModeBtn').textContent = '연결 삭제';
+    document.getElementById('newKeywordInput').value = '';
+    // 노드 선택 해제 (사이드 패널 숨기기)
+    deselectNode();
+    // SVG 연결선 제거
+    drawLinks();
+    // 로컬 스토리지 저장
+    saveLocal();
+  }
+});
+
+/* AI 키워드 생성 (서버 호출) */
+async function generateKeywords(){
+  if(!selectedNodeId) return alert('노드를 먼저 선택하세요');
+  const center = nodes.find(n => n.id === selectedNodeId);
+  if(!center) return alert('선택된 노드를 찾을 수 없습니다');
+  
+  // 키워드 생성 개수 및 심층 여부 가져오기
+  const keywordSize = parseInt(document.getElementById('keyword_size').value, 10);
+  const deep = !!document.getElementById('deep_mode')?.checked;
+  
+  // 로딩 오버레이 표시
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  loadingOverlay.classList.remove('hidden');
+  
+  try{
+    console.log(`Requesting keywords: keyword="${center.text}", size=${keywordSize}`);
+    
+    const resp = await fetch('/generate-subkeywords', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({keyword: center.text, size: keywordSize, deep})
+    });
+    
+    console.log('Response status:', resp.status);
+    
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+    }
+    
+    const data = await resp.json();
+    console.log('Response data:', data);
+    
+    if(data.error) {
+      loadingOverlay.classList.add('hidden');
+      return alert('AI error: '+data.error);
+    }
+    
+    const sub = data.subkeywords || [];
+    console.log(`Generated ${sub.length} subkeywords:`, sub);
+    
+    if (sub.length === 0) {
+      loadingOverlay.classList.add('hidden');
+      return alert('AI 키워드 생성에 실패했습니다. 서버 로그를 확인해주세요.');
+    }
+    
+    let angleStep = Math.PI*2 / Math.max(sub.length,1);
+    sub.forEach((s,i)=>{
+      const angle = i * angleStep;
+      const dist = 160;
+      const x = center.x + Math.cos(angle)*dist;
+      const y = center.y + Math.sin(angle)*dist;
+      const n = addNode(s, x, y, randomPastel(), 14);
+      connectNodes(center.id, n.id);
+    });
+    
+    // 로딩 오버레이 숨기기
+    loadingOverlay.classList.add('hidden');
+    console.log('Keywords successfully generated and displayed');
+  }catch(e){
+    // 오류 시에도 로딩 오버레이 숨기기
+    loadingOverlay.classList.add('hidden');
+    console.error('Generation error:', e);
+    alert('서버 호출 실패: ' + e.message);
+  }
+}
+
+// 두 곳의 "생성" 버튼 모두에 핸들러 바인딩 (중복 id 대응)
+Array.from(document.querySelectorAll('#generateSubBtn')).forEach(btn => {
+  btn.addEventListener('click', (e)=>{ e.preventDefault(); generateKeywords(); });
+});
+
+/* 랜덤 파스텔색 */
+function randomPastel(){
+  const r = Math.floor(150 + Math.random()*100);
+  const g = Math.floor(150 + Math.random()*100);
+  const b = Math.floor(150 + Math.random()*100);
+  return `rgb(${r},${g},${b})`;
+}
+
+/* JSON 내보내기 */
+function exportJSON(){
+  const payload = { nodes, links, created: new Date().toISOString() };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'mindmap.json';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+document.getElementById('exportJson').addEventListener('click', exportJSON);
+
+/* JSON 가져오기 */
+document.getElementById('importJson').addEventListener('click', ()=>{
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.json,application/json';
+  input.onchange = (e)=>{
+    const f = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      try{
+        const obj = JSON.parse(reader.result);
+        nodes = obj.nodes || [];
+        links = obj.links || [];
+        nodeCounter = nodes.reduce((max,n) => Math.max(max, parseInt(n.id.slice(1)) ), 0);
+        selectedNodeId = null;
+        document.getElementById('nodeId').textContent = '-';
+        refreshAll();
+      }catch(e){
+        alert('파일 파싱 오류: '+e.message);
+      }
+    };
+    reader.readAsText(f);
+  };
+  input.click();
+});
+
+/* 전체 리프레시 */
+function refreshAll(){
+  // 기존 노드 전부 삭제
+  document.querySelectorAll('.node').forEach(n=>n.remove());
+  // Ensure all nodes have proper z-index values above connection lines
+  nodes.forEach(n => {
+    if (n.z < 1000) {
+      n.z += 1000;
+    }
+  });
+  nodes.forEach(n=>renderNode(n));
+  drawLinks();
+  applyPan();
+}
+
+/* PNG 내보내기 */
+document.getElementById('exportPNG').addEventListener('click', ()=>{
+  html2canvas(board).then(canvas=>{
+    canvas.toBlob(blob=>{
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'mindmap.png';
+      document.body.appendChild(a); a.click(); a.remove();
+    });
+  });
+});
+
+/* 저장(로컬스토리지) */
+function saveLocal(){
+  try{
+    localStorage.setItem('mindmapData', JSON.stringify({nodes, links}));
+  }catch{}
+}
+
+/* 불러오기 */
+function loadLocal(){
+  try{
+    const raw = localStorage.getItem('mindmapData');
+    if(raw){
+      const obj = JSON.parse(raw);
+      nodes = obj.nodes || [];
+      links = obj.links || [];
+      nodeCounter = nodes.reduce((max,n) => Math.max(max, parseInt(n.id.slice(1)) ), 0);
+      refreshAll();
+    }
+  }catch{}
+}
+
+/* 테마 변경 */
+const themeSelect = document.getElementById('themeSelect');
+
+function applyTheme(theme) {
+  if(theme === 'light') {
+    document.documentElement.removeAttribute('data-theme');
+  } else {
+    document.documentElement.setAttribute('data-theme', theme);
+  }
+  localStorage.setItem('mindmapTheme', theme);
+}
+
+window.addEventListener('load', () => {
+  const savedTheme = localStorage.getItem('mindmapTheme') || 'light';
+  applyTheme(savedTheme);
+  // 선택된 테마를 select box에 반영
+  themeSelect.value = savedTheme;
+  loadLocal();
+  applyPan();
+});
+
+/* 테마 선택 이벤트 */
+themeSelect.addEventListener('change', () => {
+  const theme = themeSelect.value;
+  applyTheme(theme);
+});
+
+/* 보드 클릭 시 선택 해제 */
+board.addEventListener('click', () => {
+  deselectNode();
+});
+
+// === 배경 드래그로 패닝 ===
+board.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return; // 좌클릭만
+  if (e.target.closest('.node')) return; // 노드에서 시작하면 패닝 안 함
+  isPanning = true;
+  panStart.x = e.clientX - pan.x;
+  panStart.y = e.clientY - pan.y;
+  board.style.cursor = 'grabbing';
+  document.addEventListener('mousemove', panMouseMove);
+  document.addEventListener('mouseup', panMouseUp);
+});
+
+function panMouseMove(e){
+  if(!isPanning) return;
+  pan.x = e.clientX - panStart.x;
+  pan.y = e.clientY - panStart.y;
+  applyPan();
+}
+
+function panMouseUp(){
+  isPanning = false;
+  board.style.cursor = '';
+  document.removeEventListener('mousemove', panMouseMove);
+  document.removeEventListener('mouseup', panMouseUp);
+}
+
+/* 키워드 생성 개수 슬라이더 업데이트 */
+document.getElementById('keyword_size').addEventListener('input', (e) => {
+  document.getElementById('keyword_size_display').textContent = e.target.value;
+});
+
+/* 키보드 이벤트 - Backspace로 노드 삭제, Ctrl+C로 연결 모드 */
+document.addEventListener('keydown', (e) => {
+  // 입력 필드에 포커스가 있으면 키보드 단축키 무시
+  if (document.activeElement.tagName === 'INPUT') return;
+  
+  // Backspace - 노드 삭제
+  if (e.key === 'Backspace' && selectedNodeId) {
+    e.preventDefault(); // 브라우저 뒤로가기 방지
+    // 삭제 버튼과 같은 로직 실행
+    nodes = nodes.filter(n => n.id !== selectedNodeId);
+    links = links.filter(l => l.from !== selectedNodeId && l.to !== selectedNodeId);
+    const el = document.getElementById(selectedNodeId);
+    if(el) el.remove();
+    deselectNode();
+    drawLinks();
+    saveLocal();
+  }
+  
+  // Ctrl+C - 연결 모드 토글
+  if (e.ctrlKey && e.key === 'c') {
+    e.preventDefault(); // 브라우저 복사 기능 방지
+    connectMode = !connectMode;
+    disconnectMode = false; // 연결 모드 시 연결 삭제 모드 해제
+    document.getElementById('connectModeBtn').textContent = connectMode ? '키워드 연결 선택' : '키워드 연결';
+    document.getElementById('disconnectModeBtn').textContent = '연결 삭제';
+    connectSource = null;
+    disconnectSource = null;
+  }
+  
+  // Ctrl+X - 연결 삭제 모드 토글
+  if (e.ctrlKey && e.key === 'x') {
+    e.preventDefault(); // 브라우저 잘라내기 기능 방지
+    disconnectMode = !disconnectMode;
+    connectMode = false; // 연결 삭제 모드 시 연결 모드 해제
+    document.getElementById('disconnectModeBtn').textContent = disconnectMode ? '연결 삭제 선택' : '연결 삭제';
+    document.getElementById('connectModeBtn').textContent = '키워드 연결';
+    disconnectSource = null;
+    connectSource = null;
+  }
+});
+
+</script>
+</body>
+</html>
