@@ -37,3 +37,6 @@ AI 기반 키워드 확장 기능을 갖춘 마인드맵 웹 애플리케이션�
 - `app.py` - Flask 서버와 API 라우트 정의
 - `templates/index.html` - 프론트엔드 UI 및 인터랙션 로직
 - `static/style.css` - 테마 및 화면 구성 스타일
+
+## 참고 영상
+[![HIRO AI Mindmap YouTube](https://img.youtube.com/vi/5LCEtPXw_i8/0.jpg)](https://www.youtube.com/watch?v=5LCEtPXw_i8)
